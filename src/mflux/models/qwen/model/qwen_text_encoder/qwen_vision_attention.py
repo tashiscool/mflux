@@ -1,5 +1,6 @@
 import mlx.core as mx
 from mlx import nn
+from mlx.core.fast import scaled_dot_product_attention
 
 
 class VisionAttention(nn.Module):
@@ -8,6 +9,7 @@ class VisionAttention(nn.Module):
         self.embed_dim = embed_dim
         self.num_heads = num_heads
         self.head_dim = embed_dim // num_heads
+        self.scale = 1.0 / (self.head_dim**0.5)
 
         self.qkv = nn.Linear(embed_dim, 3 * embed_dim, bias=True)
         self.proj = nn.Linear(embed_dim, embed_dim, bias=True)
@@ -59,24 +61,25 @@ class VisionAttention(nn.Module):
                 v_chunks.append(v[:, offset : offset + length, :])
                 offset += length
 
-            # Process each chunk separately
+            # Process each chunk with SDPA
             attn_outputs = []
-            scale = 1.0 / (self.head_dim**0.5)
             for q_chunk, k_chunk, v_chunk in zip(q_chunks, k_chunks, v_chunks):
-                # Compute attention for this chunk
-                scores = mx.matmul(q_chunk, k_chunk.transpose(0, 2, 1)) * scale
-                attn_weights = mx.softmax(scores, axis=-1)
-                attn_chunk = mx.matmul(attn_weights, v_chunk)  # [heads, chunk_len, head_dim]
-                attn_outputs.append(attn_chunk)
+                # Add batch dimension for SDPA: [heads, len, dim] -> [1, heads, len, dim]
+                q_batch = mx.expand_dims(q_chunk, axis=0)
+                k_batch = mx.expand_dims(k_chunk, axis=0)
+                v_batch = mx.expand_dims(v_chunk, axis=0)
+                attn_chunk = scaled_dot_product_attention(q_batch, k_batch, v_batch, scale=self.scale)
+                attn_outputs.append(attn_chunk.squeeze(0))  # Remove batch dim
 
             # Concatenate chunks back together
             attn_output = mx.concatenate(attn_outputs, axis=1)  # [heads, seq, head_dim]
         else:
-            # Full attention (no chunking)
-            scale = 1.0 / (self.head_dim**0.5)
-            scores = mx.matmul(q, k.transpose(0, 2, 1)) * scale  # [heads, seq, seq]
-            attn_weights = mx.softmax(scores, axis=-1)
-            attn_output = mx.matmul(attn_weights, v)  # [heads, seq, head_dim]
+            # Full attention with SDPA - add batch dimension
+            q_batch = mx.expand_dims(q, axis=0)  # [1, heads, seq, head_dim]
+            k_batch = mx.expand_dims(k, axis=0)
+            v_batch = mx.expand_dims(v, axis=0)
+            attn_output = scaled_dot_product_attention(q_batch, k_batch, v_batch, scale=self.scale)
+            attn_output = attn_output.squeeze(0)  # [heads, seq, head_dim]
 
         # Reshape and project
         attn_output = attn_output.transpose(1, 0, 2).reshape(seq_len, embed_dim)  # [seq, embed_dim]

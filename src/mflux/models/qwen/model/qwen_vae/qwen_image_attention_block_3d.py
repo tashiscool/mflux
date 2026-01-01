@@ -1,5 +1,6 @@
 import mlx.core as mx
 from mlx import nn
+from mlx.core.fast import scaled_dot_product_attention
 
 from mflux.models.qwen.model.qwen_vae.qwen_image_rms_norm import QwenImageRMSNorm
 
@@ -8,6 +9,7 @@ class QwenImageAttentionBlock3D(nn.Module):
     def __init__(self, dim: int):
         super().__init__()
         self.dim = dim
+        self.scale = 1.0 / (dim ** 0.5)
         self.norm = QwenImageRMSNorm(dim, images=True)
         self.to_qkv = nn.Conv2d(dim, dim * 3, kernel_size=1, stride=1, padding=0)
         self.proj = nn.Conv2d(dim, dim, kernel_size=1, stride=1, padding=0)
@@ -26,10 +28,8 @@ class QwenImageAttentionBlock3D(nn.Module):
         qkv = mx.reshape(qkv, (batch_size * time, 1, channels * 3, height * width))
         qkv = mx.transpose(qkv, (0, 1, 3, 2))
         q, k, v = mx.split(qkv, 3, axis=-1)
-        scale = 1.0 / mx.sqrt(mx.array(float(channels)))
-        scores = mx.matmul(q, mx.transpose(k, (0, 1, 3, 2))) * scale
-        attn_weights = mx.softmax(scores, axis=-1)
-        attn_out = mx.matmul(attn_weights, v)
+        # Use optimized SDPA instead of manual attention
+        attn_out = scaled_dot_product_attention(q, k, v, scale=self.scale)
         attn_out = mx.squeeze(attn_out, axis=1)
         attn_out = mx.transpose(attn_out, (0, 2, 1))
         attn_out = mx.reshape(attn_out, (batch_size * time, channels, height, width))
