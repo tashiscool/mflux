@@ -49,5 +49,7 @@ class LoRALinear(nn.Module):
 
     def __call__(self, x):
         base_out = self.linear(x)
-        lora_out = mx.matmul(mx.matmul(x, self.lora_A), self.lora_B)
-        return base_out + self.scale * lora_out
+        # Use fused multiply-add (MADD) for better performance on Apple Silicon
+        # mx.addmm computes: beta * c + alpha * (a @ b)
+        lora_intermediate = mx.matmul(x, self.lora_A)
+        return mx.addmm(base_out, lora_intermediate, self.lora_B, alpha=self.scale, beta=1.0)

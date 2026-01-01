@@ -13,8 +13,11 @@ class FusedLoRALinear(nn.Module):
     def __call__(self, x):
         base_out = self.base_linear(x)
 
-        lora_out = mx.zeros_like(base_out)
+        # Use fused multiply-add (mx.addmm) for each LoRA adapter
+        # Accumulates directly into base_out for better memory efficiency
+        result = base_out
         for lora in self.loras:
-            lora_out += lora.scale * mx.matmul(mx.matmul(x, lora.lora_A), lora.lora_B)
+            lora_intermediate = mx.matmul(x, lora.lora_A)
+            result = mx.addmm(result, lora_intermediate, lora.lora_B, alpha=lora.scale, beta=1.0)
 
-        return base_out + lora_out
+        return result
